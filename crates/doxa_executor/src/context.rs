@@ -74,7 +74,7 @@ impl<'a, C: GameClient> GameContext<'a, C> {
             serde_json::to_vec(&game_event).unwrap(),
         )
         .await
-        .map_err(|e| GameContextError::Emit(e))
+        .map_err(GameContextError::Emit)
         .map(|_| ())
     }
 
@@ -157,6 +157,24 @@ impl<'a, C: GameClient> GameContext<'a, C> {
         Ok(msg)
     }
 
+    /// Takes a file from a particular directory, assuming that it exists.
+    /// This does not wait for the file to be created or done writing, it's important that you
+    /// allow the indicate it has written **and flushed** the file.
+    /// This will delete the file it has taken.
+    ///
+    /// The recommended output directory is `/output` which is writable by the agent.
+    pub async fn take_file<S: Into<String>>(
+        &mut self,
+        agent_id: usize,
+        path: S,
+    ) -> Result<Vec<u8>, GameContextError> {
+        let agent = self.agent_mut(agent_id)?;
+
+        let file = agent.take_file(path.into()).await?;
+
+        Ok(file)
+    }
+
     /// Sends a reboot message to the VM instructing it to restart the agent's process inside the
     /// VM.
     ///
@@ -195,7 +213,7 @@ impl<'a, C: GameClient> GameContext<'a, C> {
         agent
             .send_agent_input(msg)
             .await
-            .map_err(|e| GameContextError::SendInput(e))?;
+            .map_err(GameContextError::SendInput)?;
 
         Ok(())
     }

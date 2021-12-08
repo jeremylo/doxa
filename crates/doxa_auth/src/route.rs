@@ -4,7 +4,8 @@ use doxa_db::{action, serde_json, PgPool};
 
 use crate::{
     controller,
-    error::{InviteNotFound, RegistrationDisabled},
+    error::{InviteNotFound, RegistrationDisabled, TooManyLoginAttempts},
+    limits::AuthLimits,
     Settings,
 };
 
@@ -27,9 +28,17 @@ async fn login(
     db_pool: web::Data<PgPool>,
     body: web::Json<request::Login>,
     settings: web::Data<Settings>,
+    limiter: web::Data<AuthLimits>,
 ) -> EndpointResult {
+    let request::Login { username, password } = body.0;
+
+    limiter
+        .login_attempts
+        .get_permit(&username)
+        .await?
+        .map_err(TooManyLoginAttempts::from)?;
+
     let token = web::block(move || {
-        let request::Login { username, password } = body.0;
         // In future this needs to be handled properly, perferably where .get is non-blocking
         // so the error can easily be handled by the macro (right either (1) a wrapper error type will
         // be needed or (2) the error needs to be incorporated into the output of create_user - (2) not
@@ -40,9 +49,7 @@ async fn login(
     })
     .await??;
 
-    Ok(HttpResponse::Ok()
-        .json(response::Login { auth_token: token })
-        .into())
+    Ok(HttpResponse::Ok().json(response::Login { auth_token: token }))
 }
 
 async fn register(
@@ -62,7 +69,7 @@ async fn register(
     })
     .await??;
 
-    Ok(HttpResponse::Ok().json(serde_json::json!({})).into())
+    Ok(HttpResponse::Ok().json(serde_json::json!({})))
 }
 
 async fn accept_invite(
@@ -79,7 +86,7 @@ async fn accept_invite(
     })
     .await??;
 
-    Ok(HttpResponse::Ok().json(serde_json::json!({})).into())
+    Ok(HttpResponse::Ok().json(serde_json::json!({})))
 }
 
 async fn invite_info(db_pool: web::Data<PgPool>, invite_id: web::Path<String>) -> EndpointResult {
@@ -93,11 +100,9 @@ async fn invite_info(db_pool: web::Data<PgPool>, invite_id: web::Path<String>) -
     .await??
     .ok_or(InviteNotFound)?;
 
-    Ok(HttpResponse::Ok()
-        .json(InviteInfo {
-            username: invite.username,
-            expires_at: invite.expires_at,
-            enrollments: invite.enrollments,
-        })
-        .into())
+    Ok(HttpResponse::Ok().json(InviteInfo {
+        username: invite.username,
+        expires_at: invite.expires_at,
+        enrollments: invite.enrollments,
+    }))
 }

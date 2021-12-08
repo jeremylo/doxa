@@ -2,7 +2,7 @@ use std::{
     ffi::OsStr,
     io::{self, ErrorKind},
     os::unix::prelude::OsStrExt,
-    path::PathBuf,
+    path::{Path, PathBuf},
     str::FromStr,
     time::Duration,
 };
@@ -19,7 +19,10 @@ use tokio::{
 use tokio_vsock::VsockStream;
 
 use crate::{
-    error::{AgentLifecycleError, AgentShutdownError, HandleMessageError, ReceieveAgentError},
+    error::{
+        AgentLifecycleError, AgentShutdownError, HandleMessageError, ReceieveAgentError,
+        TakeFileError,
+    },
     stream::{MessageReader, Stream},
     ExecutionConfig,
 };
@@ -93,7 +96,7 @@ impl VMExecutor {
                     }
                     message = message_reader.read_full_message(&mut executor.stream) => {
                         let message = message.expect("failed to read message");
-                        println!("Got line {}", String::from_utf8_lossy(&message).to_string());
+                        println!("Got line {}", String::from_utf8_lossy(message).to_string());
                         executor.handle_message(message).await.unwrap();
                     }
                 };
@@ -150,8 +153,39 @@ impl VMExecutor {
             b"SHUTDOWN" => self.shutdown(true).await?,
             b"SPAWN" => self.spawn(msg).await?,
             b"REBOOT" => self.reboot(msg).await?,
+            b"TAKEFILE" => self.take_file(msg).await?,
             _ => return Err(HandleMessageError::UnrecognisedPrefix),
         }
+
+        Ok(())
+    }
+
+    async fn take_file(&mut self, msg: &[u8]) -> Result<(), TakeFileError> {
+        let path = PathBuf::from(OsStr::from_bytes(msg));
+
+        let metadata = tokio::fs::metadata(&path)
+            .await
+            .map_err(|e| match e.kind() {
+                io::ErrorKind::NotFound => TakeFileError::FileNotFound,
+                _ => e.into(),
+            })?;
+
+        if !metadata.is_file() {
+            return Err(TakeFileError::NotFile);
+        }
+
+        // In future this could be relaxed, each competition could specify a MAX file size and if a
+        // file exceeds the MAX_MSG_LEN but not the max file size, then it could be sent in chunks.
+        if metadata.len() >= MAX_MSG_LEN as u64 {
+            return Err(TakeFileError::FileTooLarge);
+        }
+
+        let file = tokio::fs::read(&path).await?;
+        tokio::fs::remove_file(&path).await?;
+
+        self.stream
+            .send_prefixed_full_message(b"FILEDATA_", &file)
+            .await?;
 
         Ok(())
     }
@@ -162,7 +196,7 @@ impl VMExecutor {
                 .child_process
                 .kill()
                 .await
-                .map_err(|e| AgentShutdownError::FailedToKillAgent(e))?;
+                .map_err(AgentShutdownError::FailedToKillAgent)?;
         } else if required {
             return Err(AgentShutdownError::AgentNotRunning.into());
         }
@@ -201,7 +235,7 @@ impl VMExecutor {
     /// Then extract the tar file to `{output_dir}/agent` and delete the downloaded tar.
     async fn receive_agent(
         stream: &mut Stream<VsockStream>,
-        output_dir: &PathBuf,
+        output_dir: &Path,
     ) -> Result<(), ReceieveAgentError> {
         // == Name message
         let mut name_msg = Vec::with_capacity(100);

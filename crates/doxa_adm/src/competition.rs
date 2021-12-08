@@ -3,6 +3,7 @@ use doxa_db::{
     action,
     diesel::PgConnection,
     model::competition::{Competition, Enrollment, InsertableCompetition},
+    was_unique_key_violation,
 };
 
 pub fn competition_subcommand(matches: &ArgMatches, conn: &PgConnection) {
@@ -22,7 +23,7 @@ pub fn competition_subcommand(matches: &ArgMatches, conn: &PgConnection) {
     }
 }
 
-fn print_competition_table(competitions: &Vec<Competition>) {
+fn print_competition_table(competitions: &[Competition]) {
     print_competition_table_header();
 
     for competition in competitions {
@@ -78,7 +79,7 @@ pub fn enroll(matches: &ArgMatches, conn: &PgConnection) {
     );
 }
 
-pub fn unenroll(matches: &ArgMatches, conn: &PgConnection) {
+pub fn unenroll(matches: &ArgMatches, _conn: &PgConnection) {
     let username = matches.value_of("USERNAME").unwrap();
     let competition_name = matches.value_of("COMPETITION").unwrap();
 
@@ -88,13 +89,21 @@ pub fn unenroll(matches: &ArgMatches, conn: &PgConnection) {
 pub fn create(matches: &ArgMatches, conn: &PgConnection) {
     let competition_name = matches.value_of("COMPETITION_NAME").unwrap();
 
-    let competition = action::competition::register_competition(
+    let ensure_exists = matches.is_present("ENSURE_EXISTS");
+
+    let competition = match action::competition::register_competition(
         conn,
         &InsertableCompetition {
             name: competition_name.to_string(),
         },
-    )
-    .unwrap();
+    ) {
+        Ok(competition) => competition,
+        Err(e) if was_unique_key_violation(&e) && ensure_exists => {
+            println!("The competition already exists and --ensure-exists was set so ignoring");
+            return;
+        }
+        Err(e) => panic!("failed to create competition: {}", e),
+    };
 
     print_single_competition(&competition);
 }

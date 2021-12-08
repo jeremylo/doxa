@@ -1,4 +1,4 @@
-use crate::error::AgentLifecycleManagerError;
+use crate::error::{AgentLifecycleManagerError, TakeFileManagerError};
 use crate::manager::ManagerError::TimeoutWaitingForVMConnection;
 use std::time::Duration;
 use std::{io, path::PathBuf};
@@ -10,10 +10,10 @@ use tokio::{
     task,
 };
 
-use tracing::{info, trace};
+use tracing::trace;
 
 use crate::{
-    error::{AgentLifecycleError, ManagerError, SendAgentError},
+    error::{ManagerError, SendAgentError},
     executor::MAX_MSG_LEN,
     stream::Stream,
 };
@@ -45,7 +45,7 @@ impl Manager {
         // maybe implement a custom Drop for manager that calls spawn_blocking?
         // Also if the executor is typically run as it's own process in future it may not matter,
         // it will probably only be a problem if it's being run on the main webserver process.
-        let dir = task::spawn_blocking(|| tempdir()).await??;
+        let dir = task::spawn_blocking(tempdir).await??;
 
         let rootfs_path = dir.path().join("rootfs");
 
@@ -107,7 +107,7 @@ impl Manager {
         self.stream
             .send_stream(&mut agent, agent_size as usize)
             .await
-            .map_err(|e| SendAgentError::DownloadAgentError(e))?;
+            .map_err(SendAgentError::DownloadAgentError)?;
 
         self.stream
             .send_full_message("FILE ENDS".as_bytes())
@@ -189,6 +189,37 @@ impl Manager {
         .map_err(|_| AgentLifecycleManagerError::Timeout)??;
 
         Ok(())
+    }
+
+    pub async fn take_file(&mut self, path: String) -> Result<Vec<u8>, TakeFileManagerError> {
+        self.stream
+            .send_prefixed_full_message(b"TAKEFILE_", path.as_bytes())
+            .await?;
+
+        let mut buf = timeout(Duration::from_secs(120), async {
+            // The previous agent may have outputted messages that we haven't read yet, it's not ideal
+            // but we drop them here.
+            // In future this should be changed to become more reliable.
+            let mut buf = Vec::new();
+
+            loop {
+                self.stream.next_full_message(&mut buf, MAX_MSG_LEN).await?;
+
+                if buf.starts_with(b"FILEDATA_") {
+                    break;
+                }
+            }
+
+            Result::<_, TakeFileManagerError>::Ok(buf)
+        })
+        .await
+        .map_err(|_| TakeFileManagerError::Timeout)??;
+
+        let prefix_len = b"FILEDATA_".len();
+        buf.copy_within(prefix_len.., 0);
+        buf.truncate(buf.len() - prefix_len);
+
+        Ok(buf)
     }
 
     /// Get access to the underlying stream

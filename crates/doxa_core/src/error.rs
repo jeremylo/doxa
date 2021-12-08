@@ -22,13 +22,11 @@ pub trait RespondableError: fmt::Debug + std::error::Error {
 
     fn status_code(&self) -> StatusCode;
 
-    fn into_response(&self) -> HttpResponse {
-        HttpResponseBuilder::new(self.status_code())
-            .json(ErrorResponse {
-                error_code: self.error_code(),
-                error: self.error_message(),
-            })
-            .into()
+    fn as_response(&self) -> HttpResponse {
+        HttpResponseBuilder::new(self.status_code()).json(ErrorResponse {
+            error_code: self.error_code(),
+            error: self.error_message(),
+        })
     }
 }
 
@@ -52,7 +50,7 @@ impl actix_web::ResponseError for RespondableErrorWrapper {
     }
 
     fn error_response(&self) -> HttpResponse {
-        self.0.into_response()
+        self.0.as_response()
     }
 }
 
@@ -115,6 +113,18 @@ impl_respondable_error!(
 
 impl_respondable_error!(
     tokio::task::JoinError,
+    INTERNAL_SERVER_ERROR,
+    "INTERNAL_SERVER_ERROR"
+);
+
+impl_respondable_error!(
+    crate::redis::RedisError,
+    INTERNAL_SERVER_ERROR,
+    "INTERNAL_SERVER_ERROR"
+);
+
+impl_respondable_error!(
+    crate::redis::RedisPoolError,
     INTERNAL_SERVER_ERROR,
     "INTERNAL_SERVER_ERROR"
 );
